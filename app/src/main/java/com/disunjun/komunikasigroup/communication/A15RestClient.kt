@@ -1,0 +1,117 @@
+package com.disunjun.komunikasigroup.communication
+
+import com.disunjun.komunikasigroup.domain.AuthUser
+import com.disunjun.komunikasigroup.domain.CommunicationError
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URI
+
+/** Authenticated A1.5 session: opaque bearer token plus the public user profile. */
+data class A15Session(
+    val token: String,
+    val user: AuthUser
+)
+
+/**
+ * A1.5 REST client. Implements the auth contract only:
+ *   POST /api/auth/login
+ *   GET  /api/auth/me
+ *   POST /api/auth/logout
+ *
+ * Bearer token is only carried inside request headers. Tokens are never logged.
+ */
+class A15RestClient(
+    private val baseUrl: String = A15Config.baseUrl
+) {
+    /** POST /api/auth/login -> {token, user, expiresAt}. */
+    fun login(nama: String, sandi: String): Result<A15Session> {
+        val body = JSONObject().put("nama", nama).put("sandi", sandi).toString()
+        return request("/api/auth/login", "POST", body = body).map { json ->
+            val token = json.optString("token").ifBlank {
+                throw CommunicationError.Authentication("Login berhasil tetapi token tidak diterima server.")
+            }
+            A15Session(token, parseUser(json.optJSONObject("user")))
+        }
+    }
+
+    /** GET /api/auth/me -> {user, expiresAt}. */
+    fun me(token: String): Result<AuthUser> {
+        return request("/api/auth/me", "GET", token = token).map { json ->
+            val user = json.optJSONObject("user")
+                ?: throw CommunicationError.Authentication("Sesi tidak valid.")
+            parseUser(user)
+        }
+    }
+
+    /** POST /api/auth/logout -> revokes the session server-side. */
+    fun logout(token: String): Result<Unit> {
+        return request("/api/auth/logout", "POST", token = token).map { Unit }
+    }
+
+    private fun parseUser(user: JSONObject?): AuthUser {
+        if (user == null) {
+            throw CommunicationError.Authentication("Respons tidak memiliki data user.")
+        }
+        return AuthUser(
+            id = if (user.has("id") && !user.isNull("id")) user.optLong("id") else null,
+            nama = user.optString("nama", user.optString("username", "")),
+            role = user.optString("role", "user"),
+            status = user.optString("status", "aktif"),
+            banned = user.optBoolean("banned", false),
+            muted = user.optBoolean("muted", false)
+        )
+    }
+
+    private fun request(path: String, method: String, body: String? = null, token: String? = null): Result<JSONObject> {
+        return try {
+            val connection = URI.create(baseUrl + path).toURL().openConnection() as HttpURLConnection
+            try {
+                connection.requestMethod = method
+                connection.connectTimeout = 10_000
+                connection.readTimeout = 10_000
+                connection.useCaches = false
+                connection.setRequestProperty("Accept", "application/json")
+                connection.setRequestProperty("Content-Type", "application/json")
+                if (!token.isNullOrBlank()) {
+                    connection.setRequestProperty("Authorization", "Bearer $token")
+                }
+                if (method == "POST") {
+                    connection.doOutput = true
+                    connection.outputStream.use { it.write(body.orEmpty().toByteArray(Charsets.UTF_8)) }
+                }
+
+                val status = connection.responseCode
+                val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+                val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                val json = try {
+                    JSONObject(text)
+                } catch (_: Exception) {
+                    JSONObject()
+                }
+
+                if (status == 401) {
+                    throw CommunicationError.Authentication(
+                        json.optString("message").ifBlank { "Sesi tidak valid atau kedaluwarsa." }
+                    )
+                }
+                if (status == 403) {
+                    throw CommunicationError.Authentication(
+                        json.optString("message").ifBlank { "Akun tidak diizinkan masuk." }
+                    )
+                }
+                if (status !in 200..299 || !json.optBoolean("ok", true)) {
+                    throw CommunicationError.Unknown(
+                        json.optString("message").ifBlank { "Backend HTTP $status" }
+                    )
+                }
+                Result.success(json)
+            } finally {
+                connection.disconnect()
+            }
+        } catch (e: CommunicationError) {
+            Result.failure(e)
+        } catch (e: Exception) {
+            Result.failure(CommunicationError.Network("Tidak dapat terhubung ke backend."))
+        }
+    }
+}
