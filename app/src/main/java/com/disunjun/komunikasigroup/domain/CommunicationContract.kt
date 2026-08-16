@@ -57,12 +57,84 @@ object FloorParser {
     }
 }
 
+/**
+ * ICE/TURN server descriptor produced from the A1.5 GET /api/turn-credentials
+ * contract. Credentials are short-lived (ttl, typically 86400s) and live only
+ * in memory for the active media session; they must never be persisted or logged.
+ */
+data class IceServer(
+    val urls: List<String>,
+    val username: String?,
+    val credential: String?
+)
+
+/** Parsed A1.5 TURN credential response. */
+data class TurnCredentials(
+    val ttl: Long?,
+    val iceServers: List<IceServer>
+)
+
+/**
+ * Pure A1.5 GET /api/turn-credentials parser. Free of Android/HTTP types so the
+ * domain contract is unit-testable on the JVM. Transport adapters map their raw
+ * JSON into Map<String, Any?> and delegate here.
+ */
+object TurnCredentialParser {
+    fun parse(payload: Map<String, Any?>): Result<TurnCredentials> {
+        if (payload["ok"] == false) {
+            return Result.failure(
+                CommunicationError.Turn(
+                    payload["message"]?.toString().orEmpty().ifBlank { "Respons TURN tidak valid." }
+                )
+            )
+        }
+        val rawServers = payload["iceServers"] ?: emptyList<Any?>()
+        val servers = (rawServers as? List<*>)
+            ?.mapIndexedNotNull { index, raw ->
+                val entry = raw as? Map<*, *> ?: return@mapIndexedNotNull null
+                val urls = when (val u = entry["urls"]) {
+                    is String -> listOf(u)
+                    is List<*> -> u.mapNotNull { it as? String }
+                    else -> null
+                }
+                val cleanUrls = urls?.map { it.trim() }?.filter { it.isNotEmpty() }
+                if (cleanUrls.isNullOrEmpty()) {
+                    return@mapIndexedNotNull null
+                }
+                IceServer(
+                    urls = cleanUrls,
+                    username = entry["username"] as? String,
+                    credential = entry["credential"] as? String
+                )
+            }
+            ?: emptyList()
+
+        if (servers.isEmpty()) {
+            return Result.failure(
+                CommunicationError.Turn("Respons TURN tidak berisi ICE servers yang valid.")
+            )
+        }
+
+        val ttl = (payload["ttl"] as? Number)?.toLong()
+        return Result.success(TurnCredentials(ttl = ttl, iceServers = servers))
+    }
+}
+
+/**
+ * Fetches short-lived TURN/ICE credentials for the current media session.
+ * Implementations must not log credentials or persist them beyond the call.
+ */
+interface TurnCredentialProvider {
+    fun getTurnCredentials(): Result<TurnCredentials>
+}
+
 /** Domain-level failure. No HTTP/Socket.IO implementation details leak out of adapters. */
 sealed class CommunicationError(override val message: String) : Exception(message) {
     class Authentication(message: String) : CommunicationError(message)
     class Network(message: String) : CommunicationError(message)
     class Socket(message: String) : CommunicationError(message)
     class Room(message: String) : CommunicationError(message)
+    class Turn(message: String) : CommunicationError(message)
     class Unknown(message: String) : CommunicationError(message)
 }
 

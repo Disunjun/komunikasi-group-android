@@ -2,6 +2,8 @@ package com.disunjun.komunikasigroup.communication
 
 import com.disunjun.komunikasigroup.domain.AuthUser
 import com.disunjun.komunikasigroup.domain.CommunicationError
+import com.disunjun.komunikasigroup.domain.TurnCredentialParser
+import com.disunjun.komunikasigroup.domain.TurnCredentials
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URI
@@ -48,6 +50,18 @@ class A15RestClient(
         return request("/api/auth/logout", "POST", token = token).map { Unit }
     }
 
+    /**
+     * GET /api/turn-credentials -> short-lived Cloudflare ICE servers.
+     * Attaches the bearer token when present. Returns credentials in memory
+     * only; callers must not persist or log them.
+     */
+    fun turnCredentials(token: String?): Result<TurnCredentials> {
+        return request("/api/turn-credentials", "GET", token = token).mapCatching { json ->
+            TurnCredentialParser.parse(json.toFlatMap())
+                .getOrElse { throw it }
+        }
+    }
+
     private fun parseUser(user: JSONObject?): AuthUser {
         if (user == null) {
             throw CommunicationError.Authentication("Respons tidak memiliki data user.")
@@ -89,21 +103,9 @@ class A15RestClient(
                     JSONObject()
                 }
 
-                if (status == 401) {
-                    throw CommunicationError.Authentication(
-                        json.optString("message").ifBlank { "Sesi tidak valid atau kedaluwarsa." }
-                    )
-                }
-                if (status == 403) {
-                    throw CommunicationError.Authentication(
-                        json.optString("message").ifBlank { "Akun tidak diizinkan masuk." }
-                    )
-                }
-                if (status !in 200..299 || !json.optBoolean("ok", true)) {
-                    throw CommunicationError.Unknown(
-                        json.optString("message").ifBlank { "Backend HTTP $status" }
-                    )
-                }
+                classifyResponse(status, json)
+                    ?.let { throw it }
+
                 Result.success(json)
             } finally {
                 connection.disconnect()
@@ -114,4 +116,22 @@ class A15RestClient(
             Result.failure(CommunicationError.Network("Tidak dapat terhubung ke backend."))
         }
     }
+
+    /** Pure HTTP-status + ok/message -> domain error mapping. Unit-tested without a network. */
+    internal fun classifyResponse(status: Int, ok: Boolean, message: String?): CommunicationError? =
+        when {
+            status == 401 -> CommunicationError.Authentication(
+                message?.ifBlank { null } ?: "Sesi tidak valid atau kedaluwarsa."
+            )
+            status == 403 -> CommunicationError.Authentication(
+                message?.ifBlank { null } ?: "Akun tidak diizinkan masuk."
+            )
+            status !in 200..299 || !ok -> CommunicationError.Unknown(
+                message?.ifBlank { null } ?: "Backend HTTP $status"
+            )
+            else -> null
+        }
+
+    private fun classifyResponse(status: Int, json: JSONObject): CommunicationError? =
+        classifyResponse(status, json.optBoolean("ok", true), json.optString("message").ifBlank { null })
 }

@@ -301,29 +301,10 @@ class A15CommunicationAdapter(context: Context) : CommunicationPort, A15SocketCa
         }
     }
 
+    private fun JSONObject.toMap(): Map<String, Any?> = toFlatMap()
+
     private fun nullableString(json: JSONObject, key: String): String? =
         if (json.isNull(key)) null else json.optString(key).ifBlank { null }
-
-    private fun JSONObject.toMap(): Map<String, Any?> {
-        val keys = keys()
-        return buildMap {
-            while (keys.hasNext()) {
-                val key = keys.next()
-                val value = opt(key)
-                when (value) {
-                    is JSONObject -> put(key, value.toMap())
-                    is JSONArray -> {
-                        val list = buildList<Any?> {
-                            for (i in 0 until value.length()) add(value.opt(i))
-                        }
-                        put(key, list)
-                    }
-                    JSONObject.NULL -> put(key, null)
-                    else -> put(key, value)
-                }
-            }
-        }
-    }
 
     private fun emitConnection(state: ConnectionState) {
         listener?.onConnectionState(state)
