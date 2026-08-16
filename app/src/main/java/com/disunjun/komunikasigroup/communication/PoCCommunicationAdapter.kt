@@ -1,7 +1,6 @@
 package com.disunjun.komunikasigroup.communication
 
 import com.disunjun.komunikasigroup.domain.CommunicationPort
-import kotlinx.coroutines.runBlocking
 
 /**
  * PoC transport adapter. It deliberately contains no backend protocol knowledge.
