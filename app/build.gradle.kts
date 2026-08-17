@@ -19,6 +19,11 @@ android {
             "BACKEND_URL",
             "\"https://komunikasi-group-v2-production.up.railway.app\""
         )
+        buildConfigField(
+            "String",
+            "SIGNALING_URL",
+            "\"http://10.0.2.2:4000\""
+        )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -47,6 +52,7 @@ dependencies {
     implementation("io.socket:socket.io-client:2.1.1") {
         exclude(group = "org.json", module = "json")
     }
+    implementation("io.github.webrtc-sdk:android:125.6422.07")
 
     testImplementation("junit:junit:4.13.2")
 

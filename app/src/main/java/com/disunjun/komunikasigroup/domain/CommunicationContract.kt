@@ -128,6 +128,33 @@ interface TurnCredentialProvider {
     fun getTurnCredentials(): Result<TurnCredentials>
 }
 
+/** Coarse media-call lifecycle surfaced to the UI/service layer. */
+enum class MediaCallStage {
+    OFFLINE, LOGGING_IN, JOINING_CHANNEL, SIGNALING, NEGOTIATING, CONNECTED, CLOSED, FAILED
+}
+
+/** Non-secret snapshot of the media call state. Never carries SDP/ICE/token data. */
+data class MediaCallSnapshot(
+    val stage: MediaCallStage,
+    val error: String? = null
+)
+
+/** A v3 channel participant addressable as a media target by its v3 sessionId. */
+data class MediaPeer(
+    val name: String,
+    val sessionId: String
+)
+
+/**
+ * Non-secret identity from a v3 media login. The raw JWT emitted by the v3
+ * /api/auth/login endpoint is kept inside the adapter only and never crosses
+ * the domain boundary (nor logs/persistence).
+ */
+data class V3MediaIdentity(
+    val name: String,
+    val sessionId: String
+)
+
 /** Domain-level failure. No HTTP/Socket.IO implementation details leak out of adapters. */
 sealed class CommunicationError(override val message: String) : Exception(message) {
     class Authentication(message: String) : CommunicationError(message)
@@ -171,10 +198,23 @@ interface CommunicationPort {
     suspend fun joinRoom(target: ChannelTarget): Result<Unit>
     fun updatePresence(micStatus: Boolean, floorStatus: String)
     fun setListener(listener: CommunicationListener?)
+
+    // ---- Media-signaling (v3) extensions ----
+    suspend fun mediaLogin(name: String, password: String): Result<V3MediaIdentity>
+    suspend fun mediaJoinChannel(channelId: String): Result<Unit>
+    fun startMediaCall(remoteSessionId: String): Result<Unit>
+    fun stopMediaCall(): Result<Unit>
+    fun setMediaSignalingListener(listener: MediaSignalingListener?)
 }
 
 /** Recording Contract V3 boundary: UI/service never depends on a concrete recorder. */
 interface RecordingPort {
     fun start(): Result<Unit>
     fun stop(): Result<Unit>
+}
+
+/** Media-signaling notifications pushed from the adapter to the UI/service layer. */
+interface MediaSignalingListener {
+    fun onMediaCallSnapshot(snapshot: MediaCallSnapshot)
+    fun onMediaPeers(peers: List<MediaPeer>)
 }

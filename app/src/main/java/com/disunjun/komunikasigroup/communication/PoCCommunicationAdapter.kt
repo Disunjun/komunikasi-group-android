@@ -5,6 +5,8 @@ import com.disunjun.komunikasigroup.domain.ChannelTarget
 import com.disunjun.komunikasigroup.domain.CommunicationError
 import com.disunjun.komunikasigroup.domain.CommunicationListener
 import com.disunjun.komunikasigroup.domain.CommunicationPort
+import com.disunjun.komunikasigroup.domain.MediaSignalingListener
+import com.disunjun.komunikasigroup.domain.V3MediaIdentity
 
 /**
  * PoC transport adapter. It deliberately contains no backend protocol knowledge.
@@ -49,4 +51,19 @@ class PoCCommunicationAdapter : CommunicationPort {
     override fun setListener(listener: CommunicationListener?) {
         this.listener = listener
     }
+
+    // ---- Media-signaling (v3): not implemented in PoC ----
+    override suspend fun mediaLogin(name: String, password: String): Result<V3MediaIdentity> =
+        Result.failure(CommunicationError.Socket("PoC adapter tidak mendukung signaling media."))
+
+    override suspend fun mediaJoinChannel(channelId: String): Result<Unit> =
+        Result.failure(CommunicationError.Socket("PoC adapter tidak mendukung signaling media."))
+
+    override fun startMediaCall(remoteSessionId: String): Result<Unit> =
+        Result.failure(CommunicationError.Socket("PoC adapter tidak mendukung signaling media."))
+
+    override fun stopMediaCall(): Result<Unit> =
+        Result.failure(CommunicationError.Socket("PoC adapter tidak mendukung signaling media."))
+
+    override fun setMediaSignalingListener(listener: MediaSignalingListener?) = Unit
 }

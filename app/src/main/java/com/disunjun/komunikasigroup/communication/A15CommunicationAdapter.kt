@@ -10,8 +10,16 @@ import com.disunjun.komunikasigroup.domain.CommunicationPort
 import com.disunjun.komunikasigroup.domain.ConnectionState
 import com.disunjun.komunikasigroup.domain.FloorParser
 import com.disunjun.komunikasigroup.domain.FloorState
+import com.disunjun.komunikasigroup.domain.MediaCallSnapshot
+import com.disunjun.komunikasigroup.domain.MediaCallStage
+import com.disunjun.komunikasigroup.domain.MediaErrorCode
+import com.disunjun.komunikasigroup.domain.MediaPeer
+import com.disunjun.komunikasigroup.domain.MediaSession
+import com.disunjun.komunikasigroup.domain.MediaSessionState
+import com.disunjun.komunikasigroup.domain.MediaSignalingListener
 import com.disunjun.komunikasigroup.domain.PresenceInfo
 import com.disunjun.komunikasigroup.domain.PttState
+import com.disunjun.komunikasigroup.domain.V3MediaIdentity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -28,7 +36,7 @@ import java.util.UUID
  * Socket.IO details to the UI/service layer. Networking lives here (and in its
  * collaborators), NOT in the ForegroundService.
  */
-class A15CommunicationAdapter(context: Context) : CommunicationPort, A15SocketCallback {
+class A15CommunicationAdapter(context: Context) : CommunicationPort, A15SocketCallback, MediaSocketCallback, MediaSessionEventListener {
 
     private val appContext = context.applicationContext
     private val prefs: SharedPreferences =
@@ -43,6 +51,132 @@ class A15CommunicationAdapter(context: Context) : CommunicationPort, A15SocketCa
     private var currentUser: AuthUser? = null
     private var roomJoined = false
     private var lastFloor = FloorState(currentTalker = null, queue = emptyList(), lastUpdate = 0L)
+
+    private val v3Authenticator = V3MediaAuthenticator()
+    private var mediaSocket: V3MediaSocketClient? = null
+    private var mediaListener: MediaSignalingListener? = null
+    private var mediaManager: MediaSignalingManager? = null
+    private var mediaChannelId: String? = null
+    private var localPeerId: String? = null
+
+    // ---- media signaling (v3) extensions ----
+
+    override suspend fun mediaLogin(name: String, password: String): Result<V3MediaIdentity> {
+        return v3Authenticator.login(name, password).map { session ->
+            val identity = V3MediaIdentity(name = session.name, sessionId = session.sessionId)
+            val socket = V3MediaSocketClient(
+                mediaCallback = this,
+                frameListener = MediaSignalTransportListener { event, payload ->
+                    mediaManager?.onMediaFrame(event, payload)
+                }
+            )
+            mediaSocket = socket
+            socket.connect(session.token)
+            emitMediaCall(MediaCallStage.LOGGING_IN)
+            identity
+        }
+    }
+
+    override suspend fun mediaJoinChannel(channelId: String): Result<Unit> {
+        val socket = mediaSocket ?: return Result.failure(
+            CommunicationError.Authentication("Login media terlebih dahulu.")
+        )
+        return runCatching {
+            mediaChannelId = channelId
+            emitMediaCall(MediaCallStage.JOINING_CHANNEL)
+            socket.joinChannel(channelId)
+        }.let { r ->
+            r.onFailure { e ->
+                listener?.onError(CommunicationError.Socket(e.message ?: "Gagal masuk channel media."))
+                emitMediaCall(MediaCallStage.FAILED, e.message)
+            }
+            r.map { Unit }
+        }
+    }
+
+    override fun startMediaCall(remoteSessionId: String): Result<Unit> {
+        val manager = mediaManager ?: return Result.failure(
+            CommunicationError.Room("Belum masuk channel media.")
+        )
+        return manager.initiateCall(remoteSessionId)
+    }
+
+    override fun stopMediaCall(): Result<Unit> {
+        val manager = mediaManager ?: return Result.success(Unit)
+        val result = manager.leave()
+        emitMediaCall(MediaCallStage.CLOSED)
+        return result
+    }
+
+    override fun setMediaSignalingListener(listener: MediaSignalingListener?) {
+        mediaListener = listener
+    }
+
+    // ---- MediaSocketCallback ----
+
+    override fun onMediaSocketState(state: MediaSocketState) {
+        if (state == MediaSocketState.CONNECTED) {
+            emitMediaCall(MediaCallStage.LOGGING_IN)
+        }
+    }
+
+    override fun onChannelJoined(channel: JSONObject) {
+        val channelId = channel.optString("id").ifBlank {
+            mediaChannelId ?: return@onChannelJoined
+        }
+        val groupId = channel.optString("group_id").ifBlank { "Grup 1" }
+        val socket = mediaSocket ?: return
+        val manager = MediaSignalingManager(
+            engine = GoogleWebRtcEngine(appContext),
+            transport = socket,
+            turnCredentialProvider = CommunicationRuntime.turnCredentials(appContext),
+            localPeerId = requirePeerId(),
+            group = groupId,
+            channel = channelId
+        )
+        manager.setListener(this)
+        mediaManager = manager
+        emitMediaCall(MediaCallStage.SIGNALING)
+    }
+
+    override fun onChannelError(message: String) {
+        listener?.onError(CommunicationError.Room(message))
+        emitMediaCall(MediaCallStage.FAILED, message)
+    }
+
+    override fun onChannelPeers(peers: JSONArray) {
+        val list = List(peers.length()) { i ->
+            val p = peers.optJSONObject(i) ?: return@List MediaPeer(name = "", sessionId = "")
+            MediaPeer(name = p.optString("name", ""), sessionId = p.optString("sessionId", ""))
+        }.filter { it.name.isNotBlank() && it.sessionId.isNotBlank() }
+        emitMediaPeers(list)
+    }
+
+    // ---- MediaSessionEventListener ----
+
+    override fun onMediaSessionState(state: MediaSession) {
+        val stage = when (state.state) {
+            MediaSessionState.NEW, MediaSessionState.SIGNALING -> MediaCallStage.SIGNALING
+            MediaSessionState.CONNECTING -> MediaCallStage.NEGOTIATING
+            MediaSessionState.CONNECTED -> MediaCallStage.CONNECTED
+            MediaSessionState.DISCONNECTED -> MediaCallStage.CLOSED
+            MediaSessionState.FAILED -> MediaCallStage.FAILED
+            MediaSessionState.CLOSED -> MediaCallStage.CLOSED
+        }
+        emitMediaCall(stage)
+    }
+
+    override fun onMediaError(code: MediaErrorCode?, message: String) {
+        emitMediaCall(MediaCallStage.FAILED, message)
+    }
+
+    private fun emitMediaCall(stage: MediaCallStage, message: String? = null) {
+        mediaListener?.onMediaCallSnapshot(MediaCallSnapshot(stage = stage, error = message))
+    }
+
+    private fun emitMediaPeers(peers: List<MediaPeer>) {
+        mediaListener?.onMediaPeers(peers)
+    }
 
     override fun setListener(listener: CommunicationListener?) {
         this.listener = listener
@@ -317,6 +451,10 @@ class A15CommunicationAdapter(context: Context) : CommunicationPort, A15SocketCa
     fun shutdown() {
         scope.cancel()
         socketClient.disconnect()
+        mediaManager?.shutdown()
+        mediaManager = null
+        mediaSocket?.disconnect()
+        mediaSocket = null
     }
 
     private fun A15SocketClient.connectIfNeeded(tokenProvider: () -> String) {
