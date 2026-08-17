@@ -1,0 +1,54 @@
+```
+# Dependencies
+.gradle/
+node_modules/
+
+# Build artifacts
+build/
+dist/
+target/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.venv.bak/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git/modules/
+!.git/objects/
+!.git/info/refs
+!.git/info/exclude
+!.git/logs/
+logs/
+*.sqlite
+.DS_Store
+Thumbs.db
+```
